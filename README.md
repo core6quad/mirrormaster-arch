@@ -23,6 +23,12 @@
 
 ## Quick Start
 
+## docker compose
+
+it's very easy, you can figure it out!
+
+## without docker
+
 ### WARNING!!!!!!!!! DO NOT open the admin panel port to the public, there is no auth!!!!!
 
 1. **Clone the repo:**
