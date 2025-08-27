@@ -2,38 +2,74 @@
 <html>
 <head>
   <title>MirrorMaster Admin</title>
+  <!-- MaterializeCSS & Google Fonts -->
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css" rel="stylesheet">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <style>
-    body { font-family: sans-serif; margin: 2em; }
-    .stat { margin-bottom: 1em; }
-    .label { font-weight: bold; }
-    #progressBarContainer { width: 100%; background: #eee; border-radius: 5px; height: 24px; margin-bottom: 1em; }
-    #progressBar { height: 100%; background: #4caf50; width: 0%; border-radius: 5px; transition: width 0.2s; }
-    #controls { margin-bottom: 1em; }
-    button { margin-right: 1em; }
-    #totalProgressBarContainer { width: 100%; background: #ddd; border-radius: 5px; height: 16px; margin-bottom: 1em; }
-    #totalProgressBar { height: 100%; background: #2196f3; width: 0%; border-radius: 5px; transition: width 0.2s; }
+    body { background: #fafafa; }
+    .container { max-width: 900px; }
+    .progress-bar-label { font-size: 0.9em; color: #555; margin-bottom: 0.2em; }
+    .log-area { background: #222; color: #eee; padding: 1em; border-radius: 6px; max-height: 300px; overflow: auto; font-size: 13px; }
+    .stat-row { margin-bottom: 0.7em; }
+    .stat-label { font-weight: 500; color: #444; }
+    .stat-value { font-family: monospace; }
+    .card-panel { padding: 1.2em 2em; }
+    .btn { margin-right: 1em; }
+    .divider { margin: 1.5em 0; }
+    @media (max-width: 600px) {
+      .container { padding: 0 0.5em; }
+      .card-panel { padding: 0.7em 0.5em; }
+    }
   </style>
 </head>
 <body>
-  <h1>MirrorMaster Admin</h1>
-  <div id="controls">
-    <button id="startBtn">Start Sync</button>
-    <button id="stopBtn">Stop Sync</button>
+  <nav class="blue darken-2">
+    <div class="nav-wrapper container">
+      <span class="brand-logo" style="font-size:1.4em;left:0;">MirrorMaster Admin</span>
+    </div>
+  </nav>
+  <div class="container">
+    <div class="card-panel z-depth-1">
+      <div class="row" style="margin-bottom:1.2em;">
+        <div class="col s12 m8">
+          <button id="startBtn" class="btn waves-effect blue darken-2 white-text"><i class="material-icons left">play_arrow</i>Start Sync</button>
+          <button id="stopBtn" class="btn waves-effect red darken-2 white-text"><i class="material-icons left">stop</i>Stop Sync</button>
+        </div>
+        <div class="col s12 m4 right-align" style="margin-top:0.7em;">
+          <span class="stat-label">Current Workers:</span>
+          <span id="currentWorkers" class="stat-value">-</span>
+        </div>
+      </div>
+      <div class="progress-bar-label">Total Progress</div>
+      <div class="progress" style="height:18px;">
+        <div id="totalProgressBar" class="determinate blue" style="width:0%"></div>
+      </div>
+      <div class="row stat-row" style="margin-bottom:0.2em;">
+        <div class="col s6 m3"><span class="stat-label">Total Progress:</span> <span id="totalProgressText" class="stat-value">-</span></div>
+        <div class="col s6 m3"><span class="stat-label">Progress:</span> <span id="progress" class="stat-value">-</span></div>
+        <div class="col s6 m3"><span class="stat-label">Time Spent:</span> <span id="timeSpent" class="stat-value">-</span></div>
+        <div class="col s6 m3"><span class="stat-label">ETA:</span> <span id="eta" class="stat-value">-</span></div>
+      </div>
+      <div class="divider"></div>
+      <div class="row stat-row">
+        <div class="col s12 m6"><span class="stat-label">Current Task:</span> <span id="currentTask" class="stat-value">-</span></div>
+        <div class="col s12 m6"><span class="stat-label">Current Download Speed:</span> <span id="currentFileSpeed" class="stat-value">-</span></div>
+      </div>
+      <div class="row stat-row">
+        <div class="col s12 m6"><span class="stat-label">Disk Usage:</span> <span id="diskUsage" class="stat-value">-</span></div>
+        <div class="col s12 m6"><span class="stat-label">Estimated Size Increase:</span> <span id="estimatedSizeIncrease" class="stat-value">-</span></div>
+      </div>
+      <div class="divider"></div>
+      <div class="row">
+        <div class="col s12">
+          <span class="stat-label">Log:</span>
+          <pre id="log" class="log-area"></pre>
+        </div>
+      </div>
+    </div>
   </div>
-  <div id="totalProgressBarContainer">
-    <div id="totalProgressBar"></div>
-  </div>
-  <div class="stat"><span class="label">Current Download Speed:</span> <span id="currentFileSpeed">-</span></div>
-  <div class="stat"><span class="label">Disk Usage:</span> <span id="diskUsage">-</span></div>
-  <div class="stat"><span class="label">Current Task:</span> <span id="currentTask">-</span></div>
-  <div class="stat"><span class="label">Current Workers:</span> <span id="currentWorkers">-</span></div>
-  <div class="stat"><span class="label">Progress:</span> <span id="progress">-</span></div>
-  <div class="stat"><span class="label">Total Progress:</span> <span id="totalProgressText">-</span></div>
-  <div class="stat"><span class="label">Time Spent:</span> <span id="timeSpent">-</span></div>
-  <div class="stat"><span class="label">ETA:</span> <span id="eta">-</span></div>
-  <div class="stat"><span class="label">Estimated Size Increase:</span> <span id="estimatedSizeIncrease">-</span></div>
-  <div class="stat"><span class="label">Log:</span></div>
-  <pre id="log" style="background:#222;color:#eee;padding:1em;border-radius:5px;max-height:300px;overflow:auto;font-size:13px;"></pre>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/js/materialize.min.js"></script>
   <script>
     function formatBytes(bytes) {
       if (bytes === 0) return '0 B';
@@ -80,13 +116,6 @@
     };
     document.getElementById('startBtn').onclick = function() {
       ws.send(JSON.stringify({ action: 'start' }));
-    };
-    document.getElementById('stopBtn').onclick = function() {
-      ws.send(JSON.stringify({ action: 'stop' }));
-    };
-  </script>
-</body>
-</html>
     };
     document.getElementById('stopBtn').onclick = function() {
       ws.send(JSON.stringify({ action: 'stop' }));

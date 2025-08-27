@@ -16,6 +16,9 @@ const TIMEOUT_MS = parseInt(process.env.FILE_TIMEOUT_MS || '1000', 10);
 const DOWNLOAD_SPEED_LIMIT_KBPS = parseInt(process.env.DOWNLOAD_SPEED_LIMIT_KBPS || '-1', 10);
 const MULTITHREADED = process.env.MULTITHREADED === 'true';
 
+// Only include these top-level folders (comma-separated, configurable)
+const MIRROR_INCLUDE_FOLDERS = (process.env.MIRROR_INCLUDE_FOLDERS || 'core,extra,community,multilib').split(',').map(f => f.trim()).filter(Boolean);
+
 // --- Web server setup (unchanged) ---
 const app = express();
 const server = http.createServer(app);
@@ -129,6 +132,7 @@ function getRelativeMirrorPath(repo, fileObj) {
   // We want: repo/os/ARCH/<fileObj.href>
   // Remove any leading './' or '/' from href
   let cleanHref = fileObj.href.replace(/^\.?\//, '');
+  // This ensures files go to mirror/core/os/x86_64, mirror/extra/os/x86_64, etc.
   return path.join(repo, 'os', ARCH, cleanHref);
 }
 
@@ -262,6 +266,7 @@ async function downloadFileWithThrottle(repo, fileObj, mirror, perThreadSpeedLim
   syncState.currentWorkers = syncState.currentTasks.filter(Boolean).length;
   broadcastState();
 
+  const localPath = path.join(__dirname, 'mirror', relPath);
   if (await fs.pathExists(localPath)) return;
 
   try {
@@ -334,19 +339,197 @@ async function downloadFileWithThrottle(repo, fileObj, mirror, perThreadSpeedLim
   }
 }
 
+// Set the root path to clone (relative to the mirror root)
+const MIRROR_ROOT_PATH = process.env.MIRROR_ROOT_PATH || ''; // e.g. '' for full, or 'core/os/x86_64/'
+
+// --- Improved scanning speed and reliability ---
+const DIR_LIST_TIMEOUT = 7000; // ms, lower timeout for directory listing
+const DIR_SCAN_CONCURRENCY = 10; // max concurrent directory requests
+
+// Simple concurrency pool for async functions
+function createConcurrencyPool(limit) {
+  let active = 0;
+  const queue = [];
+  function run(fn) {
+    return new Promise((resolve, reject) => {
+      const task = async () => {
+        active++;
+        try {
+          const result = await fn();
+          resolve(result);
+        } catch (err) {
+          reject(err);
+        } finally {
+          active--;
+          if (queue.length) queue.shift()();
+        }
+      };
+      if (active < limit) {
+        task();
+      } else {
+        queue.push(task);
+      }
+    });
+  }
+  return run;
+}
+
+const dirPool = createConcurrencyPool(DIR_SCAN_CONCURRENCY);
+
+// Recursively fetch all files and directories from a given path on the mirror, with concurrency
+async function fetchAllFilesRecursive(mirror, basePath = MIRROR_ROOT_PATH) {
+  let url = mirror;
+  if (!url.endsWith('/')) url += '/';
+  url += basePath;
+  if (url.endsWith('//')) url = url.replace(/\/+$/, '/'); // avoid double slash
+
+  // Only scan allowed folders at the root level
+  if (!basePath || basePath === '' || basePath === '/') {
+    let files = [];
+    try {
+      const res = await dirPool(() =>
+        axios.get(url, { timeout: DIR_LIST_TIMEOUT }).catch(e => { throw e; })
+      );
+      const dom = new JSDOM(res.data);
+      const links = [...dom.window.document.querySelectorAll('a')];
+      const subdirPromises = [];
+      for (const a of links) {
+        let href = a.getAttribute('href');
+        if (!href || href.startsWith('?') || href.startsWith('/')) continue;
+        if (href === '../') continue;
+        if (href.endsWith('/')) {
+          // Only include allowed folders at root
+          const folder = href.replace(/\/$/, '');
+          if (MIRROR_INCLUDE_FOLDERS.includes(folder)) {
+            subdirPromises.push(fetchAllFilesRecursive(mirror, folder + '/'));
+          }
+        }
+      }
+      const subdirFiles = await Promise.allSettled(subdirPromises);
+      for (const result of subdirFiles) {
+        if (result.status === 'fulfilled') {
+          files = files.concat(result.value);
+        } else {
+          addLog(`Failed to list ${url}: ${result.reason && result.reason.message ? result.reason.message : result.reason}`);
+        }
+      }
+    } catch (err) {
+      addLog(`Failed to list ${url}: ${err.message}`);
+    }
+    return files;
+  }
+
+  // Regular recursive scan for files and directories
+  let files = [];
+  try {
+    const res = await dirPool(() =>
+      axios.get(url, { timeout: DIR_LIST_TIMEOUT }).catch(e => { throw e; })
+    );
+    const dom = new JSDOM(res.data);
+    const links = [...dom.window.document.querySelectorAll('a')];
+    const subdirPromises = [];
+    for (const a of links) {
+      let href = a.getAttribute('href');
+      if (!href || href.startsWith('?') || href.startsWith('/')) continue;
+      if (href === '../') continue;
+      const fullPath = path.posix.join(basePath, href);
+      if (href.endsWith('/')) {
+        subdirPromises.push(fetchAllFilesRecursive(mirror, fullPath));
+      } else {
+        files.push({ mirror, relPath: fullPath });
+      }
+    }
+    const subdirFiles = await Promise.allSettled(subdirPromises);
+    for (const result of subdirFiles) {
+      if (result.status === 'fulfilled') {
+        files = files.concat(result.value);
+      } else {
+        addLog(`Failed to list ${url}: ${result.reason && result.reason.message ? result.reason.message : result.reason}`);
+      }
+    }
+  } catch (err) {
+    addLog(`Failed to list ${url}: ${err.message}`);
+  }
+  return files;
+}
+
+// Download a single file, preserving the full relative path
+async function downloadMirrorFile(fileObj, mirrors, workerId = 0, perThreadSpeedLimitKbps = -1) {
+  let lastError;
+  for (const mirror of mirrors) {
+    const url = mirror.replace(/\/+$/, '') + '/' + fileObj.relPath.replace(/^\//, '');
+    const localPath = path.join(__dirname, 'mirror', fileObj.relPath);
+
+    // Check if file exists and is up-to-date
+    if (await fs.pathExists(localPath)) {
+      return;
+    }
+
+    try {
+      addLog(`Worker #${workerId + 1}: Downloading ${fileObj.relPath} from ${mirror}...`);
+      await fs.ensureDir(path.dirname(localPath));
+      const res = await axios.get(url, { responseType: 'stream', timeout: 30000 });
+      const writer = fs.createWriteStream(localPath);
+
+      // Throttle if needed
+      if (perThreadSpeedLimitKbps > 0) {
+        const stream = res.data;
+        let bytesThisSecond = 0;
+        let throttleLastTime = Date.now();
+        stream.on('data', chunk => {
+          bytesThisSecond += chunk.length;
+          const now = Date.now();
+          if (bytesThisSecond > perThreadSpeedLimitKbps * 1024) {
+            const elapsed = now - throttleLastTime;
+            if (elapsed < 1000) {
+              stream.pause();
+              setTimeout(() => {
+                bytesThisSecond = 0;
+                throttleLastTime = Date.now();
+                stream.resume();
+              }, 1000 - elapsed);
+            } else {
+              bytesThisSecond = 0;
+              throttleLastTime = now;
+            }
+          }
+        });
+        stream.pipe(writer);
+      } else {
+        res.data.pipe(writer);
+      }
+
+      await new Promise((resolve, reject) => {
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+      });
+      addLog(`Worker #${workerId + 1}: Downloaded ${fileObj.relPath} from ${mirror}`);
+      return;
+    } catch (err) {
+      lastError = err;
+      addLog(`Worker #${workerId + 1}: Failed to download ${fileObj.relPath} from ${mirror}: ${err.message}`);
+    }
+  }
+  addLog(`Worker #${workerId + 1}: Failed to download ${fileObj.relPath} from all mirrors.`);
+  throw lastError;
+}
+
+// Main sync logic (recursive, full mirror)
 async function syncMirror() {
   if (syncState.running) return;
   syncState.running = true;
   syncAbortController.stop = false;
+  syncState.currentTasks = [];
+  syncState.currentWorkers = 0;
+  syncState.currentTask = 'Scanning mirror...';
+  broadcastState();
+
+  // Fetch all files from the first mirror (full recursive)
   let allFiles = [];
-  // Fetch file lists for all repos from the first mirror
-  for (const repo of REPOS) {
-    try {
-      const files = await fetchFileList(repo, MIRRORS[0]);
-      allFiles = allFiles.concat(files.map(f => ({ repo, fileObj: f })));
-    } catch (err) {
-      console.error(`Failed to fetch file list for ${repo}:`, err.message);
-    }
+  try {
+    allFiles = await fetchAllFilesRecursive(MIRRORS[0]);
+  } catch (err) {
+    addLog(`Failed to fetch file list: ${err.message}`);
   }
   syncState.total = allFiles.length;
   syncState.progress = 0;
@@ -357,16 +540,14 @@ async function syncMirror() {
   syncState.estimatedSizeIncreaseReady = false;
   broadcastState();
 
-  // Start size estimation in the background
-  estimateSizeIncrease(allFiles);
+  // Start size estimation in the background (optional, can be skipped for performance)
+  // estimateSizeIncrease(allFiles);
 
   let startTime = Date.now();
 
   if (MULTITHREADED && MIRRORS.length > 1) {
-    // Multithreaded: distribute files among mirrors
-    let fileQueue = allFiles.filter(({ repo, fileObj }) => {
-      const relPath = getRelativeMirrorPath(repo, fileObj);
-      const localPath = path.join(__dirname, 'mirror', relPath);
+    let fileQueue = allFiles.filter(fileObj => {
+      const localPath = path.join(__dirname, 'mirror', fileObj.relPath);
       return !fs.existsSync(localPath);
     });
     let progress = 0;
@@ -384,12 +565,12 @@ async function syncMirror() {
     // Download in parallel
     await Promise.all(MIRRORS.map(async (mirror, idx) => {
       addLog(`Worker #${idx + 1} spawned for mirror: ${mirror}`);
-      for (const { repo, fileObj } of mirrorQueues[idx]) {
+      for (const fileObj of mirrorQueues[idx]) {
         if (syncAbortController.stop) break;
         syncState.progress = ++progress;
         syncState.currentWorkers = syncState.currentTasks.filter(Boolean).length;
+        syncState.currentTasks[idx] = fileObj.relPath;
         syncState.currentTask = syncState.currentTasks.filter(Boolean).join(', ') || 'Idle';
-        syncState.currentFileSpeed = 0;
         // Estimate ETA
         const elapsed = (Date.now() - startTime) / 1000;
         syncState.timeSpent = Math.round(elapsed);
@@ -398,11 +579,12 @@ async function syncMirror() {
         syncState.progressBar = Math.round((progress / total) * 100);
         broadcastState();
         try {
-          await downloadFileWithThrottle(repo, fileObj, mirror, perThreadSpeedLimit, idx);
+          await downloadMirrorFile(fileObj, MIRRORS, idx, perThreadSpeedLimit);
         } catch (err) {
           // Already logged
         }
         syncState.currentWorkers = syncState.currentTasks.filter(Boolean).length;
+        syncState.currentTasks[idx] = null;
         syncState.currentTask = syncState.currentTasks.filter(Boolean).join(', ') || 'Idle';
         broadcastState();
         await sleep(TIMEOUT_MS);
@@ -418,12 +600,11 @@ async function syncMirror() {
     // Single-threaded (original logic)
     for (let i = 0; i < allFiles.length; i++) {
       if (syncAbortController.stop) break;
-      const { repo, fileObj } = allFiles[i];
+      const fileObj = allFiles[i];
       syncState.progress = i + 1;
-      syncState.currentTasks = [`${repo}/${fileObj.name}`];
+      syncState.currentTasks = [fileObj.relPath];
       syncState.currentWorkers = 1;
-      syncState.currentTask = `${repo}/${fileObj.name}`;
-      syncState.currentFileSpeed = 0;
+      syncState.currentTask = fileObj.relPath;
       // Estimate ETA
       const elapsed = (Date.now() - startTime) / 1000;
       syncState.timeSpent = Math.round(elapsed);
@@ -433,7 +614,7 @@ async function syncMirror() {
       broadcastState();
       try {
         addLog(`Worker #1 spawned for mirror: ${MIRRORS[0]}`);
-        await downloadFile(repo, fileObj, MIRRORS);
+        await downloadMirrorFile(fileObj, MIRRORS, 0, DOWNLOAD_SPEED_LIMIT_KBPS);
         addLog(`Worker #1 killed for mirror: ${MIRRORS[0]}`);
       } catch (err) {
         // error already logged in downloadFile
