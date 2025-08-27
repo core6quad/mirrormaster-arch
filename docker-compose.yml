@@ -6,38 +6,22 @@ services:
     container_name: mirrormaster
     volumes:
       - ./mirror:/app/mirror
-      - ./env:/app/.env
+      - ./.env:/app/.env
     environment:
       - NODE_ENV=production
     ports:
       - "3000:3000"
     restart: unless-stopped
 
-  # Uncomment to enable Caddy as a static file server for the mirror
-  # caddy:
-  #   image: caddy:2
-  #   container_name: caddy
-  #   depends_on:
-  #     - mirrormaster
-  #   ports:
-  #     - "8080:80"
-  #   volumes:
-  #     - ./mirror:/srv/mirror:ro
-  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
-  #   restart: unless-stopped
-
-# To use Caddy, create a Caddyfile like:
-# 
-# :80
-# root * /srv/mirror
-# file_server browse
-  #   volumes:
-  #     - ./mirror:/srv/mirror:ro
-  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
-  #   restart: unless-stopped
-
-# To use Caddy, create a Caddyfile like:
-# 
-# :80
-# root * /srv/mirror
-# file_server browse
+# Uncomment to enable Caddy as a static file server for the mirror
+# caddy:
+#   image: caddy:2
+#   container_name: caddy
+#   depends_on:
+#     - mirrormaster
+#   ports:
+#     - "8080:80"
+#   volumes:
+#     - ./mirror:/srv/mirror:ro
+#     - ./Caddyfile:/etc/caddy/Caddyfile:ro
+#   restart: unless-stopped
