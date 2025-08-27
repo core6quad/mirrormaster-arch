@@ -1019,3 +1019,4 @@
 #Server = https://mirror.meowsmp.net/arch/$repo/os/$arch
 #Server = https://mirrors.nguyenhoang.cloud/archlinux/$repo/os/$arch
 
+# took from https://archlinux.org/mirrorlist/all/ at 27.08.2025
