@@ -2,23 +2,13 @@ version: "3.8"
 
 services:
   mirrormaster:
-    image: node:20
+    build: .
     container_name: mirrormaster
-    working_dir: /app
     volumes:
       - ./mirror:/app/mirror
-      - ./index.js:/app/index.js
-      - ./admin.html:/app/admin.html
-      - ./package.json:/app/package.json
-      - ./package-lock.json:/app/package-lock.json
-      - ./from_author.md:/app/from_author.md
-      - ./README.md:/app/README.md
-      - ./allmirrors.txt:/app/allmirrors.txt
       - ./env:/app/.env
     environment:
       - NODE_ENV=production
-    command: >
-      sh -c "npm install && node index.js"
     ports:
       - "3000:3000"
     restart: unless-stopped
@@ -31,6 +21,16 @@ services:
   #     - mirrormaster
   #   ports:
   #     - "8080:80"
+  #   volumes:
+  #     - ./mirror:/srv/mirror:ro
+  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
+  #   restart: unless-stopped
+
+# To use Caddy, create a Caddyfile like:
+# 
+# :80
+# root * /srv/mirror
+# file_server browse
   #   volumes:
   #     - ./mirror:/srv/mirror:ro
   #     - ./Caddyfile:/etc/caddy/Caddyfile:ro

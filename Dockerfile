@@ -2,10 +2,9 @@ FROM node:20
 
 WORKDIR /app
 
-# Copy only package files first for better caching
+# Copy package files and install dependencies first for better caching
 COPY package.json package-lock.json* ./
-
-RUN npm install
+RUN npm install --production
 
 # Copy the rest of the app
 COPY . .
@@ -13,4 +12,5 @@ COPY . .
 # Expose the admin panel port (default 3000)
 EXPOSE 3000
 
+CMD ["node", "index.js"]
 CMD ["node", "index.js"]
