@@ -1,0 +1,5 @@
+# Example Caddyfile for use with docker-compose (see docker-compose.yml)
+:80
+
+root * /srv/mirror
+file_server browse
