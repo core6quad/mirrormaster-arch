@@ -23,15 +23,11 @@
   <div id="totalProgressBarContainer">
     <div id="totalProgressBar"></div>
   </div>
-  <div id="progressBarContainer">
-    <div id="progressBar"></div>
-  </div>
   <div class="stat"><span class="label">Current Download Speed:</span> <span id="currentFileSpeed">-</span></div>
   <div class="stat"><span class="label">Disk Usage:</span> <span id="diskUsage">-</span></div>
   <div class="stat"><span class="label">Current Task:</span> <span id="currentTask">-</span></div>
   <div class="stat"><span class="label">Current Workers:</span> <span id="currentWorkers">-</span></div>
   <div class="stat"><span class="label">Progress:</span> <span id="progress">-</span></div>
-  <div class="stat"><span class="label">Progress Bar:</span> <span id="progressBarText">-</span></div>
   <div class="stat"><span class="label">Total Progress:</span> <span id="totalProgressText">-</span></div>
   <div class="stat"><span class="label">Time Spent:</span> <span id="timeSpent">-</span></div>
   <div class="stat"><span class="label">ETA:</span> <span id="eta">-</span></div>
@@ -66,9 +62,6 @@
       // Top bar: total progress
       document.getElementById('totalProgressBar').style.width = (state.progressBar || 0) + '%';
       document.getElementById('totalProgressText').textContent = (state.progressBar || 0) + '%';
-      // Bottom bar: current file
-      document.getElementById('progressBar').style.width = (state.currentFileProgress || 0) + '%';
-      document.getElementById('progressBarText').textContent = (state.currentFileProgress || 0) + '%';
       document.getElementById('currentFileSpeed').textContent = formatSpeed(state.currentFileSpeed);
       document.getElementById('diskUsage').textContent = formatBytes(state.diskUsage || 0);
       document.getElementById('currentTask').textContent =
@@ -87,6 +80,13 @@
     };
     document.getElementById('startBtn').onclick = function() {
       ws.send(JSON.stringify({ action: 'start' }));
+    };
+    document.getElementById('stopBtn').onclick = function() {
+      ws.send(JSON.stringify({ action: 'stop' }));
+    };
+  </script>
+</body>
+</html>
     };
     document.getElementById('stopBtn').onclick = function() {
       ws.send(JSON.stringify({ action: 'stop' }));

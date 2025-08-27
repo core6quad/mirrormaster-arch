@@ -32,7 +32,6 @@ let syncState = {
   estimatedSizeIncrease: 0,
   estimatedSizeIncreaseReady: false,
   running: false,
-  currentFileProgress: 0,
   currentFileSpeed: 0,
   log: [],
   currentTasks: [],
@@ -158,7 +157,6 @@ async function downloadFile(repo, fileObj, mirrors) {
       let total = parseInt(res.headers['content-length'] || '0', 10);
       let lastReceived = 0;
       let lastTime = Date.now();
-      syncState.currentFileProgress = 0;
       syncState.currentFileSpeed = 0;
 
       res.data.on('data', chunk => {
@@ -267,7 +265,8 @@ async function downloadFileWithThrottle(repo, fileObj, mirror, perThreadSpeedLim
   if (await fs.pathExists(localPath)) return;
 
   try {
-    addLog(`Downloading ${relPath} from ${mirror}...`);
+    // Log file download event
+    addLog(`Worker #${workerId + 1}: Downloading ${relPath} from ${mirror}...`);
     const res = await axios.get(fileUrl.href, { responseType: 'stream', timeout: 30000 });
     await fs.ensureDir(path.dirname(localPath));
     const writer = fs.createWriteStream(localPath);
@@ -320,14 +319,14 @@ async function downloadFileWithThrottle(repo, fileObj, mirror, perThreadSpeedLim
       writer.on('finish', resolve);
       writer.on('error', reject);
     });
-    addLog(`Downloaded ${relPath} from ${mirror}`);
+    addLog(`Worker #${workerId + 1}: Downloaded ${relPath} from ${mirror}`);
     // Remove from currentTasks
     syncState.currentTasks[workerId] = null;
     syncState.currentWorkers = syncState.currentTasks.filter(Boolean).length;
     broadcastState();
     return;
   } catch (err) {
-    addLog(`Failed to download ${relPath} from ${mirror}: ${err.message}`);
+    addLog(`Worker #${workerId + 1}: Failed to download ${relPath} from ${mirror}: ${err.message}`);
     syncState.currentTasks[workerId] = null;
     syncState.currentWorkers = syncState.currentTasks.filter(Boolean).length;
     broadcastState();
@@ -384,13 +383,12 @@ async function syncMirror() {
 
     // Download in parallel
     await Promise.all(MIRRORS.map(async (mirror, idx) => {
+      addLog(`Worker #${idx + 1} spawned for mirror: ${mirror}`);
       for (const { repo, fileObj } of mirrorQueues[idx]) {
         if (syncAbortController.stop) break;
         syncState.progress = ++progress;
-        // Track all current tasks
         syncState.currentWorkers = syncState.currentTasks.filter(Boolean).length;
         syncState.currentTask = syncState.currentTasks.filter(Boolean).join(', ') || 'Idle';
-        syncState.currentFileProgress = 0;
         syncState.currentFileSpeed = 0;
         // Estimate ETA
         const elapsed = (Date.now() - startTime) / 1000;
@@ -409,6 +407,7 @@ async function syncMirror() {
         broadcastState();
         await sleep(TIMEOUT_MS);
       }
+      addLog(`Worker #${idx + 1} killed for mirror: ${mirror}`);
     }));
     syncState.progress = total;
     syncState.progressBar = 100;
@@ -424,7 +423,6 @@ async function syncMirror() {
       syncState.currentTasks = [`${repo}/${fileObj.name}`];
       syncState.currentWorkers = 1;
       syncState.currentTask = `${repo}/${fileObj.name}`;
-      syncState.currentFileProgress = 0;
       syncState.currentFileSpeed = 0;
       // Estimate ETA
       const elapsed = (Date.now() - startTime) / 1000;
@@ -434,7 +432,9 @@ async function syncMirror() {
       syncState.progressBar = Math.round(((i + 1) / allFiles.length) * 100);
       broadcastState();
       try {
+        addLog(`Worker #1 spawned for mirror: ${MIRRORS[0]}`);
         await downloadFile(repo, fileObj, MIRRORS);
+        addLog(`Worker #1 killed for mirror: ${MIRRORS[0]}`);
       } catch (err) {
         // error already logged in downloadFile
       }
@@ -449,8 +449,9 @@ async function syncMirror() {
   syncState.eta = 0;
   syncState.running = false;
   syncState.progressBar = 100;
-  syncState.currentFileProgress = 0;
   syncState.currentFileSpeed = 0;
+  syncState.currentTasks = [];
+  syncState.currentWorkers = 0;
   broadcastState();
   addLog('Sync complete.');
 }
