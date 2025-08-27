@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>MirrorMaster Admin</title>
+  <style>
+    body { font-family: sans-serif; margin: 2em; }
+    .stat { margin-bottom: 1em; }
+    .label { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>MirrorMaster Admin</h1>
+  <div class="stat"><span class="label">Disk Usage:</span> <span id="diskUsage">-</span></div>
+  <div class="stat"><span class="label">Current Task:</span> <span id="currentTask">-</span></div>
+  <div class="stat"><span class="label">Progress:</span> <span id="progress">-</span></div>
+  <div class="stat"><span class="label">ETA:</span> <span id="eta">-</span> seconds</div>
+  <script>
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const k = 1024, dm = 2, sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+    }
+    const ws = new WebSocket('ws://' + location.host);
+    ws.onmessage = function(event) {
+      const state = JSON.parse(event.data);
+      document.getElementById('diskUsage').textContent = formatBytes(state.diskUsage || 0);
+      document.getElementById('currentTask').textContent = state.currentTask;
+      document.getElementById('progress').textContent = state.progress + ' / ' + state.total;
+      document.getElementById('eta').textContent = state.eta || '-';
+    };
+  </script>
+</body>
+</html>
