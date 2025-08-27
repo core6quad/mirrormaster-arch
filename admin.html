@@ -35,6 +35,8 @@
   <div class="stat"><span class="label">Time Spent:</span> <span id="timeSpent">-</span></div>
   <div class="stat"><span class="label">ETA:</span> <span id="eta">-</span></div>
   <div class="stat"><span class="label">Estimated Size Increase:</span> <span id="estimatedSizeIncrease">-</span></div>
+  <div class="stat"><span class="label">Log:</span></div>
+  <pre id="log" style="background:#222;color:#eee;padding:1em;border-radius:5px;max-height:300px;overflow:auto;font-size:13px;"></pre>
   <script>
     function formatBytes(bytes) {
       if (bytes === 0) return '0 B';
@@ -76,6 +78,7 @@
         (state.estimatedSizeIncreaseReady
           ? formatBytes(state.estimatedSizeIncrease || 0)
           : 'calculating...');
+      document.getElementById('log').textContent = (state.log || []).join('\n');
     };
     document.getElementById('startBtn').onclick = function() {
       ws.send(JSON.stringify({ action: 'start' }));

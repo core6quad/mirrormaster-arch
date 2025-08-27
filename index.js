@@ -32,8 +32,20 @@ let syncState = {
   estimatedSizeIncreaseReady: false,
   running: false,
   currentFileProgress: 0,
-  currentFileSpeed: 0
+  currentFileSpeed: 0,
+  log: []
 };
+
+const LOG_LIMIT = 200;
+
+function addLog(msg) {
+  const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  syncState.log.push(line);
+  if (syncState.log.length > LOG_LIMIT) syncState.log = syncState.log.slice(-LOG_LIMIT);
+  broadcastState();
+  // Also print to console
+  console.log(line);
+}
 
 let syncAbortController = { stop: false };
 
@@ -133,7 +145,7 @@ async function downloadFile(repo, fileObj, mirrors) {
     }
 
     try {
-      console.log(`Downloading ${relPath} from ${mirror}...`);
+      addLog(`Downloading ${relPath} from ${mirror}...`);
       const res = await axios.get(fileUrl.href, { responseType: 'stream', timeout: 30000 });
       await fs.ensureDir(path.dirname(localPath));
       const writer = fs.createWriteStream(localPath);
@@ -192,17 +204,18 @@ async function downloadFile(repo, fileObj, mirrors) {
         writer.on('finish', resolve);
         writer.on('error', reject);
       });
-      // Reset after file done
       syncState.currentFileProgress = 100;
       syncState.currentFileSpeed = 0;
       broadcastState();
+      addLog(`Downloaded ${relPath} from ${mirror}`);
       return; // success
     } catch (err) {
       lastError = err;
-      console.warn(`Failed to download from ${mirror}: ${err.message}`);
+      addLog(`Failed to download ${relPath} from ${mirror}: ${err.message}`);
       // Try next mirror
     }
   }
+  addLog(`Failed to download ${relPath} from all mirrors.`);
   throw lastError;
 }
 
@@ -284,7 +297,7 @@ async function syncMirror() {
     try {
       await downloadFile(repo, fileObj, MIRRORS);
     } catch (err) {
-      console.error(`Failed to download ${repo}/${fileObj.name} from all mirrors:`, err.message);
+      // error already logged in downloadFile
     }
     await sleep(TIMEOUT_MS);
   }
@@ -295,7 +308,7 @@ async function syncMirror() {
   syncState.currentFileProgress = 0;
   syncState.currentFileSpeed = 0;
   broadcastState();
-  console.log('Sync complete.');
+  addLog('Sync complete.');
 }
 
 if (process.env.AUTO_START !== 'false') {
