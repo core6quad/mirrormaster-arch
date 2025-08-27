@@ -14,6 +14,7 @@ const REPOS = ['core', 'extra', 'community'];
 const ARCH = process.env.ARCH || 'x86_64';
 const TIMEOUT_MS = parseInt(process.env.FILE_TIMEOUT_MS || '1000', 10);
 const DOWNLOAD_SPEED_LIMIT_KBPS = parseInt(process.env.DOWNLOAD_SPEED_LIMIT_KBPS || '-1', 10);
+const MULTITHREADED = process.env.MULTITHREADED === 'true';
 
 // --- Web server setup (unchanged) ---
 const app = express();
@@ -33,7 +34,9 @@ let syncState = {
   running: false,
   currentFileProgress: 0,
   currentFileSpeed: 0,
-  log: []
+  log: [],
+  currentTasks: [],
+  currentWorkers: 0
 };
 
 const LOG_LIMIT = 200;
@@ -252,6 +255,86 @@ async function estimateSizeIncrease(allFiles) {
   broadcastState();
 }
 
+async function downloadFileWithThrottle(repo, fileObj, mirror, perThreadSpeedLimitKbps, workerId) {
+  const remoteUrl = new URL(`${mirror}/${repo}/os/${ARCH}/`);
+  const fileUrl = new URL(fileObj.href, remoteUrl);
+  const relPath = getRelativeMirrorPath(repo, fileObj);
+  // Track current task for this worker
+  syncState.currentTasks[workerId] = `${repo}/${fileObj.name}`;
+  syncState.currentWorkers = syncState.currentTasks.filter(Boolean).length;
+  broadcastState();
+
+  if (await fs.pathExists(localPath)) return;
+
+  try {
+    addLog(`Downloading ${relPath} from ${mirror}...`);
+    const res = await axios.get(fileUrl.href, { responseType: 'stream', timeout: 30000 });
+    await fs.ensureDir(path.dirname(localPath));
+    const writer = fs.createWriteStream(localPath);
+
+    // Track progress (per file, not global)
+    let received = 0;
+    let total = parseInt(res.headers['content-length'] || '0', 10);
+    let lastReceived = 0;
+    let lastTime = Date.now();
+
+    res.data.on('data', chunk => {
+      received += chunk.length;
+      // No global progress update here (handled by main thread)
+      const now = Date.now();
+      if (now - lastTime >= 1000) {
+        lastReceived = received;
+        lastTime = now;
+      }
+    });
+
+    // Throttle if needed
+    if (perThreadSpeedLimitKbps > 0) {
+      const stream = res.data;
+      let bytesThisSecond = 0;
+      let throttleLastTime = Date.now();
+      stream.on('data', chunk => {
+        bytesThisSecond += chunk.length;
+        const now = Date.now();
+        if (bytesThisSecond > perThreadSpeedLimitKbps * 1024) {
+          const elapsed = now - throttleLastTime;
+          if (elapsed < 1000) {
+            stream.pause();
+            setTimeout(() => {
+              bytesThisSecond = 0;
+              throttleLastTime = Date.now();
+              stream.resume();
+            }, 1000 - elapsed);
+          } else {
+            bytesThisSecond = 0;
+            throttleLastTime = now;
+          }
+        }
+      });
+      stream.pipe(writer);
+    } else {
+      res.data.pipe(writer);
+    }
+
+    await new Promise((resolve, reject) => {
+      writer.on('finish', resolve);
+      writer.on('error', reject);
+    });
+    addLog(`Downloaded ${relPath} from ${mirror}`);
+    // Remove from currentTasks
+    syncState.currentTasks[workerId] = null;
+    syncState.currentWorkers = syncState.currentTasks.filter(Boolean).length;
+    broadcastState();
+    return;
+  } catch (err) {
+    addLog(`Failed to download ${relPath} from ${mirror}: ${err.message}`);
+    syncState.currentTasks[workerId] = null;
+    syncState.currentWorkers = syncState.currentTasks.filter(Boolean).length;
+    broadcastState();
+    throw err;
+  }
+}
+
 async function syncMirror() {
   if (syncState.running) return;
   syncState.running = true;
@@ -280,26 +363,87 @@ async function syncMirror() {
 
   let startTime = Date.now();
 
-  for (let i = 0; i < allFiles.length; i++) {
-    if (syncAbortController.stop) break;
-    const { repo, fileObj } = allFiles[i];
-    syncState.progress = i + 1;
-    syncState.currentTask = `Downloading ${repo}/${fileObj.name}`;
-    syncState.currentFileProgress = 0;
-    syncState.currentFileSpeed = 0;
-    // Estimate ETA
-    const elapsed = (Date.now() - startTime) / 1000;
-    syncState.timeSpent = Math.round(elapsed);
-    const avgPerFile = elapsed / (i + 1);
-    syncState.eta = Math.round(avgPerFile * (allFiles.length - (i + 1)));
-    syncState.progressBar = Math.round(((i + 1) / allFiles.length) * 100);
-    broadcastState();
-    try {
-      await downloadFile(repo, fileObj, MIRRORS);
-    } catch (err) {
-      // error already logged in downloadFile
+  if (MULTITHREADED && MIRRORS.length > 1) {
+    // Multithreaded: distribute files among mirrors
+    let fileQueue = allFiles.filter(({ repo, fileObj }) => {
+      const relPath = getRelativeMirrorPath(repo, fileObj);
+      const localPath = path.join(__dirname, 'mirror', relPath);
+      return !fs.existsSync(localPath);
+    });
+    let progress = 0;
+    let total = fileQueue.length;
+    let perThreadSpeedLimit = DOWNLOAD_SPEED_LIMIT_KBPS > 0
+      ? Math.floor(DOWNLOAD_SPEED_LIMIT_KBPS / MIRRORS.length)
+      : -1;
+
+    // Assign files to each mirror in round-robin
+    let mirrorQueues = MIRRORS.map(() => []);
+    for (let i = 0; i < fileQueue.length; i++) {
+      mirrorQueues[i % MIRRORS.length].push(fileQueue[i]);
     }
-    await sleep(TIMEOUT_MS);
+
+    // Download in parallel
+    await Promise.all(MIRRORS.map(async (mirror, idx) => {
+      for (const { repo, fileObj } of mirrorQueues[idx]) {
+        if (syncAbortController.stop) break;
+        syncState.progress = ++progress;
+        // Track all current tasks
+        syncState.currentWorkers = syncState.currentTasks.filter(Boolean).length;
+        syncState.currentTask = syncState.currentTasks.filter(Boolean).join(', ') || 'Idle';
+        syncState.currentFileProgress = 0;
+        syncState.currentFileSpeed = 0;
+        // Estimate ETA
+        const elapsed = (Date.now() - startTime) / 1000;
+        syncState.timeSpent = Math.round(elapsed);
+        const avgPerFile = elapsed / (progress);
+        syncState.eta = Math.round(avgPerFile * (total - progress));
+        syncState.progressBar = Math.round((progress / total) * 100);
+        broadcastState();
+        try {
+          await downloadFileWithThrottle(repo, fileObj, mirror, perThreadSpeedLimit, idx);
+        } catch (err) {
+          // Already logged
+        }
+        syncState.currentWorkers = syncState.currentTasks.filter(Boolean).length;
+        syncState.currentTask = syncState.currentTasks.filter(Boolean).join(', ') || 'Idle';
+        broadcastState();
+        await sleep(TIMEOUT_MS);
+      }
+    }));
+    syncState.progress = total;
+    syncState.progressBar = 100;
+    syncState.currentTasks = [];
+    syncState.currentWorkers = 0;
+    syncState.currentTask = 'Idle';
+  } else {
+    // Single-threaded (original logic)
+    for (let i = 0; i < allFiles.length; i++) {
+      if (syncAbortController.stop) break;
+      const { repo, fileObj } = allFiles[i];
+      syncState.progress = i + 1;
+      syncState.currentTasks = [`${repo}/${fileObj.name}`];
+      syncState.currentWorkers = 1;
+      syncState.currentTask = `${repo}/${fileObj.name}`;
+      syncState.currentFileProgress = 0;
+      syncState.currentFileSpeed = 0;
+      // Estimate ETA
+      const elapsed = (Date.now() - startTime) / 1000;
+      syncState.timeSpent = Math.round(elapsed);
+      const avgPerFile = elapsed / (i + 1);
+      syncState.eta = Math.round(avgPerFile * (allFiles.length - (i + 1)));
+      syncState.progressBar = Math.round(((i + 1) / allFiles.length) * 100);
+      broadcastState();
+      try {
+        await downloadFile(repo, fileObj, MIRRORS);
+      } catch (err) {
+        // error already logged in downloadFile
+      }
+      syncState.currentTasks = [];
+      syncState.currentWorkers = 0;
+      syncState.currentTask = 'Idle';
+      broadcastState();
+      await sleep(TIMEOUT_MS);
+    }
   }
   syncState.currentTask = syncAbortController.stop ? 'Stopped by user' : 'Idle';
   syncState.eta = 0;

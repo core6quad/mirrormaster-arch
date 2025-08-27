@@ -29,6 +29,7 @@
   <div class="stat"><span class="label">Current Download Speed:</span> <span id="currentFileSpeed">-</span></div>
   <div class="stat"><span class="label">Disk Usage:</span> <span id="diskUsage">-</span></div>
   <div class="stat"><span class="label">Current Task:</span> <span id="currentTask">-</span></div>
+  <div class="stat"><span class="label">Current Workers:</span> <span id="currentWorkers">-</span></div>
   <div class="stat"><span class="label">Progress:</span> <span id="progress">-</span></div>
   <div class="stat"><span class="label">Progress Bar:</span> <span id="progressBarText">-</span></div>
   <div class="stat"><span class="label">Total Progress:</span> <span id="totalProgressText">-</span></div>
@@ -70,7 +71,11 @@
       document.getElementById('progressBarText').textContent = (state.currentFileProgress || 0) + '%';
       document.getElementById('currentFileSpeed').textContent = formatSpeed(state.currentFileSpeed);
       document.getElementById('diskUsage').textContent = formatBytes(state.diskUsage || 0);
-      document.getElementById('currentTask').textContent = state.currentTask;
+      document.getElementById('currentTask').textContent =
+        (state.currentTasks && state.currentTasks.length && state.currentTasks.filter(Boolean).length
+          ? state.currentTasks.filter(Boolean).join(', ')
+          : state.currentTask || '-');
+      document.getElementById('currentWorkers').textContent = state.currentWorkers || 0;
       document.getElementById('progress').textContent = state.progress + ' / ' + state.total;
       document.getElementById('timeSpent').textContent = formatTime(state.timeSpent);
       document.getElementById('eta').textContent = formatTime(state.eta);
