@@ -30,7 +30,9 @@ let syncState = {
   timeSpent: 0,
   estimatedSizeIncrease: 0,
   estimatedSizeIncreaseReady: false,
-  running: false
+  running: false,
+  currentFileProgress: 0,
+  currentFileSpeed: 0
 };
 
 let syncAbortController = { stop: false };
@@ -108,14 +110,22 @@ async function fetchFileList(repo, mirror) {
     .filter(link => !link.href.endsWith('/'));
 }
 
+function getRelativeMirrorPath(repo, fileObj) {
+  // fileObj.href is relative to /repo/os/ARCH/
+  // We want: repo/os/ARCH/<fileObj.href>
+  // Remove any leading './' or '/' from href
+  let cleanHref = fileObj.href.replace(/^\.?\//, '');
+  return path.join(repo, 'os', ARCH, cleanHref);
+}
+
 async function downloadFile(repo, fileObj, mirrors) {
   let lastError;
   for (const mirror of mirrors) {
     // Build the correct relative path from the href (to preserve structure)
     const remoteUrl = new URL(`${mirror}/${repo}/os/${ARCH}/`);
     const fileUrl = new URL(fileObj.href, remoteUrl);
-    const relPath = decodeURIComponent(fileUrl.pathname.replace(remoteUrl.pathname, ''));
-    const localPath = path.join(__dirname, 'mirror', repo, 'os', ARCH, relPath);
+    const relPath = getRelativeMirrorPath(repo, fileObj);
+    const localPath = path.join(__dirname, 'mirror', relPath);
 
     // Check if file exists and is up-to-date
     if (await fs.pathExists(localPath)) {
@@ -128,26 +138,48 @@ async function downloadFile(repo, fileObj, mirrors) {
       await fs.ensureDir(path.dirname(localPath));
       const writer = fs.createWriteStream(localPath);
 
+      // Track progress
+      let received = 0;
+      let total = parseInt(res.headers['content-length'] || '0', 10);
+      let lastReceived = 0;
+      let lastTime = Date.now();
+      syncState.currentFileProgress = 0;
+      syncState.currentFileSpeed = 0;
+
+      res.data.on('data', chunk => {
+        received += chunk.length;
+        // Progress %
+        syncState.currentFileProgress = total > 0 ? Math.round((received / total) * 100) : 0;
+        // Speed (bytes/sec)
+        const now = Date.now();
+        if (now - lastTime >= 1000) {
+          syncState.currentFileSpeed = Math.round((received - lastReceived) / ((now - lastTime) / 1000));
+          lastReceived = received;
+          lastTime = now;
+        }
+        broadcastState();
+      });
+
+      // Throttle if needed
       if (DOWNLOAD_SPEED_LIMIT_KBPS > 0) {
-        // Throttle download speed
         const stream = res.data;
         let bytesThisSecond = 0;
-        let lastTime = Date.now();
+        let throttleLastTime = Date.now();
         stream.on('data', chunk => {
           bytesThisSecond += chunk.length;
           const now = Date.now();
           if (bytesThisSecond > DOWNLOAD_SPEED_LIMIT_KBPS * 1024) {
-            const elapsed = now - lastTime;
+            const elapsed = now - throttleLastTime;
             if (elapsed < 1000) {
               stream.pause();
               setTimeout(() => {
                 bytesThisSecond = 0;
-                lastTime = Date.now();
+                throttleLastTime = Date.now();
                 stream.resume();
               }, 1000 - elapsed);
             } else {
               bytesThisSecond = 0;
-              lastTime = now;
+              throttleLastTime = now;
             }
           }
         });
@@ -160,6 +192,10 @@ async function downloadFile(repo, fileObj, mirrors) {
         writer.on('finish', resolve);
         writer.on('error', reject);
       });
+      // Reset after file done
+      syncState.currentFileProgress = 100;
+      syncState.currentFileSpeed = 0;
+      broadcastState();
       return; // success
     } catch (err) {
       lastError = err;
@@ -185,14 +221,12 @@ async function estimateSizeIncrease(allFiles) {
       await sleep(1); // Yield to event loop
     }
     checked++;
-    // Build correct local path
-    const remoteUrl = new URL(`${MIRRORS[0]}/${repo}/os/${ARCH}/`);
-    const fileUrl = new URL(fileObj.href, remoteUrl);
-    const relPath = decodeURIComponent(fileUrl.pathname.replace(remoteUrl.pathname, ''));
-    const localPath = path.join(__dirname, 'mirror', repo, 'os', ARCH, relPath);
+    const relPath = getRelativeMirrorPath(repo, fileObj);
+    const localPath = path.join(__dirname, 'mirror', relPath);
     try {
       if (!(await fs.pathExists(localPath))) {
-        // Try to get size from HEAD request (first mirror)
+        const remoteUrl = new URL(`${MIRRORS[0]}/${repo}/os/${ARCH}/`);
+        const fileUrl = new URL(fileObj.href, remoteUrl);
         const res = await axios.head(fileUrl.href, { timeout: 5000 });
         if (res.headers['content-length']) {
           size += parseInt(res.headers['content-length'], 10);
@@ -238,6 +272,8 @@ async function syncMirror() {
     const { repo, fileObj } = allFiles[i];
     syncState.progress = i + 1;
     syncState.currentTask = `Downloading ${repo}/${fileObj.name}`;
+    syncState.currentFileProgress = 0;
+    syncState.currentFileSpeed = 0;
     // Estimate ETA
     const elapsed = (Date.now() - startTime) / 1000;
     syncState.timeSpent = Math.round(elapsed);
@@ -256,6 +292,8 @@ async function syncMirror() {
   syncState.eta = 0;
   syncState.running = false;
   syncState.progressBar = 100;
+  syncState.currentFileProgress = 0;
+  syncState.currentFileSpeed = 0;
   broadcastState();
   console.log('Sync complete.');
 }

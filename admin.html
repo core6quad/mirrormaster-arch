@@ -20,12 +20,13 @@
     <button id="startBtn">Start Sync</button>
     <button id="stopBtn">Stop Sync</button>
   </div>
-  <div id="progressBarContainer">
-    <div id="progressBar"></div>
-  </div>
   <div id="totalProgressBarContainer">
     <div id="totalProgressBar"></div>
   </div>
+  <div id="progressBarContainer">
+    <div id="progressBar"></div>
+  </div>
+  <div class="stat"><span class="label">Current Download Speed:</span> <span id="currentFileSpeed">-</span></div>
   <div class="stat"><span class="label">Disk Usage:</span> <span id="diskUsage">-</span></div>
   <div class="stat"><span class="label">Current Task:</span> <span id="currentTask">-</span></div>
   <div class="stat"><span class="label">Progress:</span> <span id="progress">-</span></div>
@@ -50,17 +51,25 @@
              String(m).padStart(2, '0') + ':' +
              String(s).padStart(2, '0');
     }
+    function formatSpeed(bytesPerSec) {
+      if (!bytesPerSec || bytesPerSec < 0) return '-';
+      if (bytesPerSec < 1024) return bytesPerSec + ' B/s';
+      if (bytesPerSec < 1024 * 1024) return (bytesPerSec / 1024).toFixed(2) + ' KB/s';
+      return (bytesPerSec / 1024 / 1024).toFixed(2) + ' MB/s';
+    }
     const ws = new WebSocket('ws://' + location.host);
     ws.onmessage = function(event) {
       const state = JSON.parse(event.data);
+      // Top bar: total progress
+      document.getElementById('totalProgressBar').style.width = (state.progressBar || 0) + '%';
+      document.getElementById('totalProgressText').textContent = (state.progressBar || 0) + '%';
+      // Bottom bar: current file
+      document.getElementById('progressBar').style.width = (state.currentFileProgress || 0) + '%';
+      document.getElementById('progressBarText').textContent = (state.currentFileProgress || 0) + '%';
+      document.getElementById('currentFileSpeed').textContent = formatSpeed(state.currentFileSpeed);
       document.getElementById('diskUsage').textContent = formatBytes(state.diskUsage || 0);
       document.getElementById('currentTask').textContent = state.currentTask;
       document.getElementById('progress').textContent = state.progress + ' / ' + state.total;
-      document.getElementById('progressBar').style.width = (state.progressBar || 0) + '%';
-      document.getElementById('progressBarText').textContent = (state.progressBar || 0) + '%';
-      // Total progress bar and text
-      document.getElementById('totalProgressBar').style.width = (state.progressBar || 0) + '%';
-      document.getElementById('totalProgressText').textContent = (state.progressBar || 0) + '%';
       document.getElementById('timeSpent').textContent = formatTime(state.timeSpent);
       document.getElementById('eta').textContent = formatTime(state.eta);
       document.getElementById('estimatedSizeIncrease').textContent =
